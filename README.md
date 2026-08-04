@@ -8,21 +8,28 @@ startup shortcut — just a one-time `RunOnce` registry entry.
 
 ## One-Liner Install
 
-Open **PowerShell** (Win + R -> type `powershell` -> Enter) and paste:
+Open **Windows PowerShell** (Win + R -> type `powershell` -> Enter) and paste:
 
 ```powershell
-$d="$env:LOCALAPPDATA\SortFolder";New-Item -ItemType Directory -Path $d -Force|Out-Null;irm https://raw.githubusercontent.com/drnx64/Folder-Sorter/main/SortDownloadsFolder.ps1 -OutFile "$d\SortDownloadsFolder.ps1";reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v SortDownloads /t REG_SZ /d "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$d\SortDownloadsFolder.ps1`"" /f;Start-Process powershell -ArgumentList '-NoProfile','-WindowStyle','Hidden','-ExecutionPolicy','Bypass','-File',"`"$d\SortDownloadsFolder.ps1`"" -WindowStyle Hidden
+$d="$env:LOCALAPPDATA\SortFolder";New-Item -ItemType Directory -Path $d -Force|Out-Null;irm https://raw.githubusercontent.com/drnx64/Folder-Sorter/main/SortDownloadsFolder.ps1 -OutFile "$d\SortDownloadsFolder.ps1";Remove-Item "$d\launcher.exe" -Force -ErrorAction SilentlyContinue;Add-Type -TypeDefinition 'using System;using System.Diagnostics;using System.IO;public class L{[STAThread]public static void Main(){string s=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"SortFolder","SortDownloadsFolder.ps1");var psi=new ProcessStartInfo("powershell.exe","-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \""+s+"\""){CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden,UseShellExecute=false};using(var pr=Process.Start(psi)){pr.WaitForExit();}}}' -OutputAssembly "$d\launcher.exe" -OutputType WindowsApplication;reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v SortDownloads /t REG_SZ /d "`"$d\launcher.exe`"" /f;Start-Process "$d\launcher.exe"
 ```
 
 What it does:
 
 1. Downloads the sorter to `%LOCALAPPDATA%\SortFolder\SortDownloadsFolder.ps1`
-2. Writes a **RunOnce** registry key under `HKCU\...\CurrentVersion\RunOnce`
-3. Starts the sort immediately — fully silent (no window, no taskbar), no reboot needed
+2. Compiles a tiny windowless **`launcher.exe`** (using built-in .NET, no extra tools)
+3. Writes a **RunOnce** registry key under `HKCU\...\CurrentVersion\RunOnce` pointing to `launcher.exe`
+4. Starts the sort immediately — **100% silent: no window, no taskbar flash, no reboot needed**
 
-The RunOnce key fires **once** on your next logon, runs the sorter silently,
-then Windows deletes the key automatically. It does **not** run continuously
-in the background and does nothing after finishing.
+The RunOnce key fires **once** on your next logon, runs `launcher.exe` (which
+spawns PowerShell hidden with `CreateNoWindow`), then Windows deletes the key
+automatically. It does **not** run continuously in the background and does
+nothing after finishing.
+
+> Why not just `powershell.exe -WindowStyle Hidden`? `powershell.exe` is a
+> console app, so at logon Windows still opens a console host for a moment.
+> The `launcher.exe` is a GUI-subsystem app — Windows never creates a console
+> for it, so nothing ever appears.
 
 ---
 
@@ -61,6 +68,12 @@ in the background and does nothing after finishing.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "%LOCALAPPDATA%\SortFolder\SortDownloadsFolder.ps1"
+```
+
+Silent run (no window):
+
+```powershell
+Start-Process "%LOCALAPPDATA%\SortFolder\launcher.exe"
 ```
 
 ---
