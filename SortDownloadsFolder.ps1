@@ -18,7 +18,7 @@ $music     = [Environment]::GetFolderPath("MyMusic")
 $videos    = [Environment]::GetFolderPath("MyVideos")
 
 # ---------------------------------------------------------------
-# 8 flat destination buckets
+# Destination buckets
 # ---------------------------------------------------------------
 $fileTypes = @{}
 
