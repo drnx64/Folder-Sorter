@@ -1,21 +1,99 @@
 # ===================================================================
-# Downloads Folder Sorter - Minimal Edition
-# Single-pass sort. Runs once and exits. No background loop.
-# Sorts Downloads into 12 flat destination buckets:
-#   Pictures, Videos, Music, Documents,
-#   Documents\PDFs, Documents\MS Word, Documents\MS Excel,
-#   Documents\MS PowerPoint, Documents\Archives,
-#   Documents\Applications, Documents\Code, Documents\Uncategorized
-# Keeps: SHA-256 dedup, in-progress protection, collision renaming.
+# Downloads Folder Sorter - Login Edition (Hardened)
+# Single-pass sort. Runs once and exits. Safe for a Login task.
+#
+# Fixes over the previous version:
+#   - Recursion respects explicit exclusions (folder names + a
+#     ".nosort" marker file) so manually-organized subfolders in
+#     Downloads are never touched.
+#   - Errors are logged instead of globally swallowed.
+#   - Duplicate files go to the Recycle Bin, not permanent delete.
+#   - Partial-hash pre-check before full SHA256 (fast on large files).
+#   - In-use check happens only once, as part of the move attempt
+#     itself, instead of a separate open/close probe per file.
+#   - Every run appends a timestamped entry to a log file.
 # ===================================================================
 
-$ErrorActionPreference = "SilentlyContinue"
-
+# ---------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------
 $downloads = [Environment]::GetFolderPath("UserProfile") + "\Downloads"
 $documents = [Environment]::GetFolderPath("MyDocuments")
 $pictures  = [Environment]::GetFolderPath("MyPictures")
 $music     = [Environment]::GetFolderPath("MyMusic")
 $videos    = [Environment]::GetFolderPath("MyVideos")
+
+# Any subfolder in Downloads whose NAME is in this list is skipped
+# entirely (not scanned, not moved, not deleted). Add your own here.
+$excludedFolderNames = @("Keep", "DoNotSort", "Projects")
+
+# Alternatively, drop an empty file named ".nosort" inside any
+# Downloads subfolder to exclude it dynamically without editing
+# this script.
+$exclusionMarkerFile = ".nosort"
+
+$logPath = Join-Path $downloads "_sorter.log"
+$maxLogSizeBytes = 1MB
+
+# Set to $true if you've run `Install-Module BurntToast` once.
+$enableToastNotification = $false
+
+$ErrorActionPreference = "Stop"
+
+# ---------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------
+function Write-SortLog {
+    param([string]$Message, [string]$Level = "INFO")
+    try {
+        if ((Test-Path $logPath) -and (Get-Item $logPath).Length -gt $maxLogSizeBytes) {
+            Remove-Item $logPath -Force -ErrorAction SilentlyContinue
+        }
+        $line = "[{0}] [{1}] {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Level, $Message
+        Add-Content -Path $logPath -Value $line -ErrorAction SilentlyContinue
+    }
+    catch { }
+}
+
+# ---------------------------------------------------------------
+# Recycle Bin delete (instead of permanent Remove-Item)
+# ---------------------------------------------------------------
+Add-Type -AssemblyName Microsoft.VisualBasic
+
+function Remove-ToRecycleBin {
+    param([string]$Path)
+    [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile(
+        $Path,
+        [Microsoft.VisualBasic.FileIO.UIOption]::OnlyErrorDialogs,
+        [Microsoft.VisualBasic.FileIO.RecycleOption]::SendToRecycleBin
+    )
+}
+
+# ---------------------------------------------------------------
+# Exclusion check — walks a file's ancestor folders (relative to
+# Downloads) and returns $true if any of them should be skipped.
+# ---------------------------------------------------------------
+function Test-PathExcluded {
+    param([string]$FullPath)
+
+    $relative = $FullPath.Substring($downloads.Length).TrimStart('\')
+    $parts = $relative -split '\\'
+
+    # Walk each ancestor folder (excluding the filename itself).
+    $currentPath = $downloads
+    for ($i = 0; $i -lt $parts.Length - 1; $i++) {
+        $folderName = $parts[$i]
+        $currentPath = Join-Path $currentPath $folderName
+
+        if ($excludedFolderNames -contains $folderName) {
+            return $true
+        }
+        if (Test-Path (Join-Path $currentPath $exclusionMarkerFile)) {
+            return $true
+        }
+    }
+    return $false
+}
 
 # ---------------------------------------------------------------
 # Destination buckets
@@ -51,26 +129,16 @@ $musicExts = @(
 )
 foreach ($e in $musicExts) { $fileTypes[$e] = $music }
 
-$pdfExts = @(
-    ".pdf", ".xps", ".djvu", ".epub", ".mobi", ".azw", ".azw3", ".lit"
-)
+$pdfExts = @(".pdf", ".xps", ".djvu", ".epub", ".mobi", ".azw", ".azw3", ".lit")
 foreach ($e in $pdfExts) { $fileTypes[$e] = "$documents\PDFs" }
 
-$wordExts = @(
-    ".doc", ".docx", ".docm", ".dot", ".dotx", ".rtf", ".odt", ".wps",
-    ".wpd", ".pages"
-)
+$wordExts = @(".doc", ".docx", ".docm", ".dot", ".dotx", ".rtf", ".odt", ".wps", ".wpd", ".pages")
 foreach ($e in $wordExts) { $fileTypes[$e] = "$documents\MS Word" }
 
-$excelExts = @(
-    ".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".csv", ".ods",
-    ".numbers"
-)
+$excelExts = @(".xls", ".xlsx", ".xlsm", ".xlsb", ".xlt", ".xltx", ".csv", ".ods", ".numbers")
 foreach ($e in $excelExts) { $fileTypes[$e] = "$documents\MS Excel" }
 
-$pptExts = @(
-    ".ppt", ".pptx", ".pptm", ".pot", ".potx", ".pps", ".ppsx", ".odp"
-)
+$pptExts = @(".ppt", ".pptx", ".pptm", ".pot", ".potx", ".pps", ".ppsx", ".odp")
 foreach ($e in $pptExts) { $fileTypes[$e] = "$documents\MS PowerPoint" }
 
 $documentsExts = @(
@@ -107,48 +175,61 @@ $codeExts = @(
     ".scm", ".rkt", ".d", ".nim", ".zig", ".asm", ".s", ".ps1", ".psm1",
     ".sh", ".bash", ".zsh", ".fish", ".html", ".htm", ".css", ".scss",
     ".sass", ".less", ".styl", ".php3", ".php4", ".php5", ".wasm",
-    ".sol", ".vue", ".gradle", ".sln", ".csproj", ".vcxproj", ".dockerfile"
+    ".sol", ".gradle", ".sln", ".csproj", ".vcxproj", ".dockerfile"
 )
 foreach ($e in $codeExts) { $fileTypes[$e] = "$documents\Code" }
 
 # ---------------------------------------------------------------
 # In-progress extension filter
 # ---------------------------------------------------------------
-$inProgressPattern = "tmp|crdownload|part|opdownload|partial|!ut|bc!|download|filepart|dlm|downloading|incomplete|unfinished|idm|aria2"
+$inProgressPattern = "\.(tmp|crdownload|part|opdownload|partial|!ut|bc!|download|filepart|dlm|downloading|incomplete|unfinished|idm|aria2)$"
 
-function Get-FileHash-Custom([string]$filePath) {
+# ---------------------------------------------------------------
+# Duplicate detection — cheap partial hash first, full hash only
+# if the partial hashes actually match (keeps large-file dedup fast)
+# ---------------------------------------------------------------
+function Get-QuickHash {
+    param([string]$Path, [int]$SampleBytes = 65536)
+
+    $stream = [System.IO.File]::OpenRead($Path)
     try {
-        $stream = [System.IO.File]::OpenRead($filePath)
-        $sha256 = [System.Security.Cryptography.SHA256]::Create()
-        $hash = $sha256.ComputeHash($stream)
-        $stream.Close()
-        return [System.BitConverter]::ToString($hash).Replace("-", "").ToLower()
+        $length = [Math]::Min($SampleBytes, $stream.Length)
+        $buffer = New-Object byte[] $length
+        [void]$stream.Read($buffer, 0, $length)
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        return [BitConverter]::ToString($sha.ComputeHash($buffer))
     }
-    catch { return $null }
+    finally { $stream.Close() }
 }
 
-function IsFileInUse([string]$filePath) {
-    try {
-        $stream = [System.IO.File]::Open($filePath, 'Open', 'Read', 'None')
-        $stream.Close()
-        return $false
-    }
-    catch { return $true }
+function Test-FilesIdentical {
+    param([string]$PathA, [string]$PathB)
+
+    if ((Get-QuickHash $PathA) -ne (Get-QuickHash $PathB)) { return $false }
+    # Quick hashes matched (or files are small enough that quick == full);
+    # confirm with a full hash before treating as a duplicate.
+    $hashA = (Get-FileHash -LiteralPath $PathA -Algorithm SHA256).Hash
+    $hashB = (Get-FileHash -LiteralPath $PathB -Algorithm SHA256).Hash
+    return $hashA -eq $hashB
 }
 
 # ---------------------------------------------------------------
 # Single pass over Downloads
 # ---------------------------------------------------------------
-$allFiles = Get-ChildItem -Path $downloads -File -Recurse -ErrorAction SilentlyContinue |
-    Where-Object { $_.Extension -notmatch $inProgressPattern }
-
 $movedCount = 0
 $dedupCount = 0
+$errorCount = 0
+
+Write-SortLog "Sort started."
+
+$allFiles = Get-ChildItem -Path $downloads -File -Recurse -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -notmatch $inProgressPattern -and
+        -not (Test-PathExcluded $_.FullName)
+    }
 
 foreach ($f in $allFiles) {
     try {
-        if (IsFileInUse $f.FullName) { continue }
-
         $ext = $f.Extension.ToLower()
         $destFolder = $null
 
@@ -156,10 +237,11 @@ foreach ($f in $allFiles) {
             $destFolder = $fileTypes[$ext]
         }
         elseif ($ext -eq "" -or $ext -eq ".") {
-            $destFolder = "$documents\Uncategorized"
+            $destFolder = "$documents\Uncategorized\NO_EXTENSION"
         }
         else {
-            $destFolder = "$documents\Uncategorized"
+            $extName = $ext.TrimStart(".").ToUpper()
+            $destFolder = "$documents\Uncategorized\$extName"
         }
 
         if (!(Test-Path $destFolder)) {
@@ -168,35 +250,72 @@ foreach ($f in $allFiles) {
 
         $destPath = Join-Path $destFolder $f.Name
         $counter = 1
+        $isDuplicate = $false
 
         while (Test-Path $destPath) {
-            $existingHash = Get-FileHash-Custom $destPath
-            $incomingHash = Get-FileHash-Custom $f.FullName
-            if ($existingHash -and $incomingHash -and ($existingHash -eq $incomingHash)) {
-                Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue
-                $dedupCount++
-                continue
+            $existingFile = Get-Item -LiteralPath $destPath
+
+            if ($existingFile.Length -eq $f.Length -and (Test-FilesIdentical $destPath $f.FullName)) {
+                $isDuplicate = $true
+                break
             }
+
             $newName = "$([System.IO.Path]::GetFileNameWithoutExtension($f.Name)) ($counter)$ext"
             $destPath = Join-Path $destFolder $newName
             $counter++
         }
 
-        Move-Item -LiteralPath $f.FullName -Destination $destPath -Force -ErrorAction SilentlyContinue
-        if (Test-Path $destPath) { $movedCount++ }
+        if ($isDuplicate) {
+            Remove-ToRecycleBin -Path $f.FullName
+            $dedupCount++
+            Write-SortLog "Duplicate removed (Recycle Bin): $($f.FullName)"
+        }
+        else {
+            # Attempt the move directly — this doubles as the "file in
+            # use" check, avoiding a separate open/close probe per file.
+            Move-Item -LiteralPath $f.FullName -Destination $destPath -Force -ErrorAction Stop
+            $movedCount++
+        }
     }
-    catch { }
+    catch [System.IO.IOException] {
+        # File is locked/in use — skip quietly, it'll be picked up next login.
+        Write-SortLog "Skipped (in use): $($f.FullName)"
+    }
+    catch {
+        $errorCount++
+        Write-SortLog "ERROR on $($f.FullName): $($_.Exception.Message)" "ERROR"
+    }
 }
 
 # ---------------------------------------------------------------
-# Cleanup empty leftover folders
+# Cleanup empty leftover folders (deepest first), skipping excluded ones
 # ---------------------------------------------------------------
-for ($i = 0; $i -lt 5; $i++) {
-    $empty = @(Get-ChildItem -Path $downloads -Directory -Recurse -ErrorAction SilentlyContinue |
-        Where-Object { (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue).Count -eq 0 })
-    foreach ($dir in $empty) {
-        Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+Get-ChildItem -Path $downloads -Directory -Recurse -ErrorAction SilentlyContinue |
+    Sort-Object -Property @{Expression={$_.FullName.Length}; Descending=$true} |
+    Where-Object {
+        -not (Test-PathExcluded (Join-Path $_.FullName "x")) -and
+        $excludedFolderNames -notcontains $_.Name -and
+        -not (Test-Path (Join-Path $_.FullName $exclusionMarkerFile)) -and
+        @(Get-ChildItem -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue).Count -eq 0
+    } |
+    ForEach-Object {
+        Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+        Write-SortLog "Removed empty folder: $($_.FullName)"
+    }
+
+# ---------------------------------------------------------------
+# Completion
+# ---------------------------------------------------------------
+$summary = "Sort complete. Moved: $movedCount | Deduped (Recycle Bin): $dedupCount | Errors: $errorCount"
+Write-Host $summary
+Write-SortLog $summary
+
+if ($enableToastNotification -and ($movedCount -gt 0 -or $dedupCount -gt 0)) {
+    try {
+        Import-Module BurntToast -ErrorAction Stop
+        New-BurntToastNotification -Text "Downloads Organizer", "Moved $movedCount files. Sent $dedupCount duplicates to Recycle Bin."
+    }
+    catch {
+        Write-SortLog "Toast notification failed: $($_.Exception.Message)" "WARN"
     }
 }
-
-Write-Host "Sort complete. Moved: $movedCount | Deduped: $dedupCount"
